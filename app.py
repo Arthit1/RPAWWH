@@ -410,62 +410,76 @@ def launch_browser(
     # --------------------------------------------------------
 
     if sys.platform == "linux":
-        logger.log(
-            "Environment: Linux Server",
-            "DEBUG",
+    logger.log(
+        "Environment: Linux Server",
+        "DEBUG",
+    )
+
+    # กรณียังไม่มี Display ให้สร้างใหม่
+    ensure_virtual_display(
+        logger=logger
+    )
+
+    chromium_path = (
+        shutil.which("chromium")
+        or shutil.which("chromium-browser")
+        or shutil.which("google-chrome")
+        or shutil.which("google-chrome-stable")
+    )
+
+    if not chromium_path:
+        raise RuntimeError(
+            "ไม่พบ Chromium บน Linux "
+            "กรุณาเพิ่ม chromium "
+            "ในไฟล์ packages.txt"
         )
 
-        ensure_virtual_display(
-            logger=logger
+    display_value = os.environ.get(
+        "DISPLAY"
+    )
+
+    if not display_value:
+        raise RuntimeError(
+            "ไม่พบตัวแปร DISPLAY "
+            "แม้เปิด Xvfb แล้ว"
         )
 
-        chromium_path = (
-            shutil.which("chromium")
-            or shutil.which(
-                "chromium-browser"
-            )
-            or shutil.which(
-                "google-chrome"
-            )
-            or shutil.which(
-                "google-chrome-stable"
-            )
-        )
+    # ส่ง Environment ให้ Chromium โดยตรง
+    browser_environment = (
+        os.environ.copy()
+    )
 
-        if not chromium_path:
-            raise RuntimeError(
-                "ไม่พบ Chromium บน Linux "
-                "กรุณาเพิ่ม chromium "
-                "ในไฟล์ packages.txt"
-            )
+    browser_environment["DISPLAY"] = (
+        display_value
+    )
 
-        logger.log(
-            f"System Chromium path: "
-            f"{chromium_path}",
-            "DEBUG",
-        )
+    logger.log(
+        f"System Chromium path: "
+        f"{chromium_path}",
+        "DEBUG",
+    )
 
-        logger.log(
-            f"Display: "
-            f"{os.environ.get('DISPLAY', '-')}",
-            "DEBUG",
-        )
+    logger.log(
+        f"Display ที่ส่งให้ Chromium: "
+        f"{display_value}",
+        "DEBUG",
+    )
 
-        logger.log(
-            "เปิด Chromium แบบ Headed "
-            "บน Virtual display",
-            "DEBUG",
-        )
+    logger.log(
+        "เปิด Chromium แบบ Headed "
+        "บน Virtual display",
+        "DEBUG",
+    )
 
-        return playwright.chromium.launch(
-            executable_path=chromium_path,
-            headless=False,
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--window-size=1440,900",
-            ],
-        )
+    return playwright.chromium.launch(
+        executable_path=chromium_path,
+        headless=False,
+        env=browser_environment,
+        args=[
+            "--disable-dev-shm-usage",
+            "--window-size=1440,900",
+        ],
+    )
 
     # --------------------------------------------------------
     # macOS หรือระบบอื่น
@@ -1065,7 +1079,16 @@ def run_rpa(
         "เริ่มต้นกระบวนการ RPA",
         "START",
     )
+    if sys.platform == "linux":
+    ensure_virtual_display(
+        logger=logger
+    )
 
+    logger.log(
+        f"DISPLAY ก่อนเริ่ม Playwright: "
+        f"{os.environ.get('DISPLAY', '-')}",
+        "DEBUG",
+    )
     # Exception handling อยู่ภายใน with
     # เพื่อให้ Screenshot ก่อน Playwright ปิด
     with sync_playwright() as playwright:
