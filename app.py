@@ -3,7 +3,9 @@
 # ============================================================
 
 import asyncio
+import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -24,7 +26,6 @@ from playwright.sync_api import (
 
 # ============================================================
 # WINDOWS CONFIG
-# ต้องอยู่ก่อนเริ่ม Playwright
 # ============================================================
 
 if sys.platform == "win32":
@@ -39,8 +40,7 @@ if sys.platform == "win32":
 
 LOGIN_URL = "https://ams.cpall.co.th/login.action"
 
-# ทดสอบ True ก่อน
-# หากยังได้รับ HTTP 403 ให้เปลี่ยนเป็น False
+# ต้องเป็น False เพราะ AMS ตอบ 403 กับ Headless Browser
 HEADLESS = False
 
 DEFAULT_TIMEOUT = 30_000
@@ -105,6 +105,13 @@ EXPORT_BUTTON_SELECTOR = (
     '[type="button"]'
     '[value="Export to excel"]'
 )
+
+
+# ============================================================
+# GLOBAL
+# ============================================================
+
+_XVFB_PROCESS = None
 
 
 # ============================================================
@@ -208,8 +215,7 @@ class RpaLogger:
 
 
 # ============================================================
-# RPA LOCK
-# ป้องกันบัญชีกลางทำงานซ้อนกัน
+# PREVENT MULTIPLE RPA JOBS
 # ============================================================
 
 @st.cache_resource
@@ -225,8 +231,6 @@ def get_safe_url(page):
     try:
         parsed = urlsplit(page.url)
 
-        # ตัด Query String และ Fragment
-        # ป้องกัน Token ติดมากับ Log
         return urlunsplit(
             (
                 parsed.scheme,
@@ -271,35 +275,209 @@ def get_page_text(
 
 
 # ============================================================
+# VIRTUAL DISPLAY FOR LINUX
+# ============================================================
+
+def ensure_virtual_display(logger):
+    global _XVFB_PROCESS
+
+    if sys.platform != "linux":
+        return
+
+    current_display = os.environ.get(
+        "DISPLAY"
+    )
+
+    if current_display:
+        logger.log(
+            f"พบ Virtual display: "
+            f"{current_display}",
+            "DEBUG",
+        )
+        return
+
+    xvfb_path = shutil.which(
+        "Xvfb"
+    )
+
+    if not xvfb_path:
+        raise RuntimeError(
+            "ไม่พบ Xvfb กรุณาเพิ่ม xvfb "
+            "ในไฟล์ packages.txt"
+        )
+
+    display_number = None
+
+    for number in range(99, 110):
+        lock_file = Path(
+            f"/tmp/.X{number}-lock"
+        )
+
+        if not lock_file.exists():
+            display_number = number
+            break
+
+    if display_number is None:
+        raise RuntimeError(
+            "ไม่พบหมายเลข Virtual display "
+            "ที่สามารถใช้งานได้"
+        )
+
+    display_value = (
+        f":{display_number}"
+    )
+
+    logger.log(
+        f"กำลังเปิด Virtual display "
+        f"{display_value}"
+    )
+
+    _XVFB_PROCESS = subprocess.Popen(
+        [
+            xvfb_path,
+            display_value,
+            "-screen",
+            "0",
+            "1440x900x24",
+            "-ac",
+            "-nolisten",
+            "tcp",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    os.environ["DISPLAY"] = (
+        display_value
+    )
+
+    time.sleep(1)
+
+    if _XVFB_PROCESS.poll() is not None:
+        raise RuntimeError(
+            "ไม่สามารถเปิด Xvfb "
+            "Virtual display ได้"
+        )
+
+    logger.log(
+        f"เปิด Virtual display "
+        f"{display_value} สำเร็จ",
+        "OK",
+    )
+
+
+# ============================================================
 # LAUNCH BROWSER
-# ใช้ Chromium ที่ Playwright ติดตั้งเอง
 # ============================================================
 
 def launch_browser(
     playwright,
     logger,
 ):
-    browser_path = (
-        playwright.chromium.executable_path
-    )
+    # --------------------------------------------------------
+    # LOCAL WINDOWS
+    # --------------------------------------------------------
+
+    if sys.platform == "win32":
+        browser_path = (
+            playwright.chromium.executable_path
+        )
+
+        logger.log(
+            "Environment: Local Windows",
+            "DEBUG",
+        )
+
+        logger.log(
+            f"Browser path: {browser_path}",
+            "DEBUG",
+        )
+
+        logger.log(
+            "เปิด Chromium แบบ Headed",
+            "DEBUG",
+        )
+
+        return playwright.chromium.launch(
+            headless=False,
+            args=[
+                "--disable-dev-shm-usage",
+            ],
+        )
+
+    # --------------------------------------------------------
+    # STREAMLIT CLOUD / LINUX
+    # --------------------------------------------------------
+
+    if sys.platform == "linux":
+        logger.log(
+            "Environment: Linux Server",
+            "DEBUG",
+        )
+
+        ensure_virtual_display(
+            logger=logger
+        )
+
+        chromium_path = (
+            shutil.which("chromium")
+            or shutil.which(
+                "chromium-browser"
+            )
+            or shutil.which(
+                "google-chrome"
+            )
+            or shutil.which(
+                "google-chrome-stable"
+            )
+        )
+
+        if not chromium_path:
+            raise RuntimeError(
+                "ไม่พบ Chromium บน Linux "
+                "กรุณาเพิ่ม chromium "
+                "ในไฟล์ packages.txt"
+            )
+
+        logger.log(
+            f"System Chromium path: "
+            f"{chromium_path}",
+            "DEBUG",
+        )
+
+        logger.log(
+            f"Display: "
+            f"{os.environ.get('DISPLAY', '-')}",
+            "DEBUG",
+        )
+
+        logger.log(
+            "เปิด Chromium แบบ Headed "
+            "บน Virtual display",
+            "DEBUG",
+        )
+
+        return playwright.chromium.launch(
+            executable_path=chromium_path,
+            headless=False,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--window-size=1440,900",
+            ],
+        )
+
+    # --------------------------------------------------------
+    # macOS หรือระบบอื่น
+    # --------------------------------------------------------
 
     logger.log(
-        "กำลังใช้ Chromium "
-        "ที่ติดตั้งโดย Playwright"
-    )
-
-    logger.log(
-        f"Browser path: {browser_path}",
-        "DEBUG",
-    )
-
-    logger.log(
-        f"Headless mode: {HEADLESS}",
+        f"Environment: {sys.platform}",
         "DEBUG",
     )
 
     return playwright.chromium.launch(
-        headless=HEADLESS,
+        headless=False,
         args=[
             "--disable-dev-shm-usage",
         ],
@@ -418,7 +596,9 @@ def login_ams(
                     f"{headers.get('x-amz-cf-id', '-')}"
                 )
 
-        page.wait_for_timeout(3_000)
+        page.wait_for_timeout(
+            3_000
+        )
 
         logger.log(
             f"URL ปัจจุบัน: "
@@ -468,7 +648,6 @@ def login_ams(
             "พบช่อง Username และ Password"
         )
 
-        # ไม่บันทึก Username/Password ลง Log
         username_input.click()
         username_input.fill("")
         username_input.type(
@@ -624,7 +803,9 @@ def search_documents(
 
         branch_search.click()
 
-        page.wait_for_timeout(2_000)
+        page.wait_for_timeout(
+            2_000
+        )
 
         wait_for_popup_hidden(
             page=page,
@@ -700,7 +881,9 @@ def search_documents(
             "ก่อน Export"
         )
 
-        delay_started = time.perf_counter()
+        delay_started = (
+            time.perf_counter()
+        )
 
         page.wait_for_timeout(
             search_delay * 1_000
@@ -819,7 +1002,9 @@ def export_excel(
                 "แต่ไม่พบไฟล์ที่บันทึก"
             )
 
-        file_size = save_path.stat().st_size
+        file_size = (
+            save_path.stat().st_size
+        )
 
         if file_size == 0:
             raise RuntimeError(
@@ -881,10 +1066,14 @@ def run_rpa(
         "START",
     )
 
-    try:
-        with sync_playwright() as playwright:
-            browser_started = logger.start_step(
-                "เปิด Chromium"
+    # Exception handling อยู่ภายใน with
+    # เพื่อให้ Screenshot ก่อน Playwright ปิด
+    with sync_playwright() as playwright:
+        try:
+            browser_started = (
+                logger.start_step(
+                    "เปิด Chromium"
+                )
             )
 
             browser = launch_browser(
@@ -920,10 +1109,25 @@ def run_rpa(
                     "DEBUG",
                 )
 
-            except Exception:
+                if "HeadlessChrome" in user_agent:
+                    logger.log(
+                        "ตรวจพบ HeadlessChrome "
+                        "เว็บไซต์ AMS อาจตอบ 403",
+                        "WARN",
+                    )
+
+                else:
+                    logger.log(
+                        "ไม่พบ HeadlessChrome "
+                        "ใน User Agent",
+                        "OK",
+                    )
+
+            except Exception as user_agent_error:
                 logger.log(
                     "ไม่สามารถอ่าน Browser "
-                    "User Agent ได้",
+                    f"User Agent ได้: "
+                    f"{user_agent_error}",
                     "WARN",
                 )
 
@@ -975,96 +1179,106 @@ def run_rpa(
 
             return output_file
 
-    except Exception as error:
-        logger.log(
-            f"RPA หยุดทำงาน: {error}",
-            "ERROR",
-        )
-
-        screenshot = None
-
-        if page is not None:
+        except Exception as error:
             logger.log(
-                f"URL ตอนเกิด Error: "
-                f"{get_safe_url(page)}",
-                "DEBUG",
+                f"RPA หยุดทำงาน: {error}",
+                "ERROR",
             )
 
-            logger.log(
-                f"Page title ตอนเกิด Error: "
-                f"{get_page_title(page)}",
-                "DEBUG",
-            )
+            screenshot = None
 
-            try:
-                screenshot = page.screenshot(
-                    full_page=True
-                )
-
+            if page is not None:
                 logger.log(
-                    "บันทึกภาพหน้าจอ "
-                    "ตอนเกิด Error สำเร็จ",
+                    f"URL ตอนเกิด Error: "
+                    f"{get_safe_url(page)}",
                     "DEBUG",
                 )
 
-            except Exception as screenshot_error:
                 logger.log(
-                    "ไม่สามารถบันทึก "
-                    "ภาพหน้าจอได้: "
-                    f"{screenshot_error}",
-                    "WARN",
+                    f"Page title ตอนเกิด Error: "
+                    f"{get_page_title(page)}",
+                    "DEBUG",
                 )
 
-        error_message = str(error)
+                try:
+                    screenshot = page.screenshot(
+                        full_page=True
+                    )
 
-        if dialog_messages:
-            error_message += (
-                " | ข้อความล่าสุดจากเว็บไซต์: "
-                f"{dialog_messages[-1]}"
-            )
+                    logger.log(
+                        "บันทึกภาพหน้าจอ "
+                        "ตอนเกิด Error สำเร็จ",
+                        "DEBUG",
+                    )
 
-        raise RPAExecutionError(
-            message=error_message,
-            screenshot=screenshot,
-        ) from error
+                except Exception as screenshot_error:
+                    logger.log(
+                        "ไม่สามารถบันทึก "
+                        "ภาพหน้าจอได้: "
+                        f"{screenshot_error}",
+                        "WARN",
+                    )
 
-    finally:
-        logger.log(
-            "กำลังปิด Browser"
-        )
+            error_message = str(error)
 
-        if context is not None:
-            try:
-                context.close()
-            except Exception:
-                pass
+            if dialog_messages:
+                error_message += (
+                    " | ข้อความล่าสุดจากเว็บไซต์: "
+                    f"{dialog_messages[-1]}"
+                )
 
-        if browser is not None:
-            try:
-                browser.close()
-            except Exception:
-                pass
+            raise RPAExecutionError(
+                message=error_message,
+                screenshot=screenshot,
+            ) from error
 
-        total_duration = (
-            time.perf_counter()
-            - total_started
-        )
-
-        if completed:
+        finally:
             logger.log(
-                "RPA ทำงานเสร็จสมบูรณ์ "
-                f"ใช้เวลารวม "
-                f"{total_duration:.2f} วินาที",
-                "COMPLETE",
+                "กำลังปิด Browser"
             )
 
-        else:
-            logger.log(
-                "RPA ทำงานไม่สำเร็จ "
-                f"ใช้เวลารวม "
-                f"{total_duration:.2f} วินาที",
-                "FAILED",
+            if context is not None:
+                try:
+                    context.close()
+                except Exception as context_error:
+                    logger.log(
+                        "เกิดปัญหาระหว่างปิด "
+                        f"Browser context: "
+                        f"{context_error}",
+                        "WARN",
+                    )
+
+            if browser is not None:
+                try:
+                    browser.close()
+                except Exception as browser_error:
+                    logger.log(
+                        "เกิดปัญหาระหว่างปิด "
+                        f"Browser: "
+                        f"{browser_error}",
+                        "WARN",
+                    )
+
+            total_duration = (
+                time.perf_counter()
+                - total_started
             )
+
+            if completed:
+                logger.log(
+                    "RPA ทำงานเสร็จสมบูรณ์ "
+                    f"ใช้เวลารวม "
+                    f"{total_duration:.2f} วินาที",
+                    "COMPLETE",
+                )
+
+            else:
+                logger.log(
+                    "RPA ทำงานไม่สำเร็จ "
+                    f"ใช้เวลารวม "
+                    f"{total_duration:.2f} วินาที",
+                    "FAILED",
+                )
 
 
 # ============================================================
@@ -1072,7 +1286,9 @@ def run_rpa(
 # ============================================================
 
 def get_excel_mime(filename):
-    if filename.lower().endswith(".xls"):
+    if filename.lower().endswith(
+        ".xls"
+    ):
         return "application/vnd.ms-excel"
 
     return (
@@ -1091,7 +1307,9 @@ st.set_page_config(
     layout="centered",
 )
 
-st.title("AMS Document Export")
+st.title(
+    "AMS Document Export"
+)
 
 st.caption(
     "Login → Search → Export Excel"
@@ -1165,7 +1383,9 @@ with st.form(
 # LOG DISPLAY
 # ============================================================
 
-st.subheader("สถานะการทำงาน")
+st.subheader(
+    "สถานะการทำงาน"
+)
 
 log_placeholder = st.empty()
 
@@ -1215,8 +1435,10 @@ if submitted:
     else:
         rpa_lock = get_rpa_lock()
 
-        lock_acquired = rpa_lock.acquire(
-            blocking=False
+        lock_acquired = (
+            rpa_lock.acquire(
+                blocking=False
+            )
         )
 
         if not lock_acquired:
@@ -1237,7 +1459,9 @@ if submitted:
                     "โปรดติดตามใน Log..."
                 ):
                     output_file = run_rpa(
-                        username=username.strip(),
+                        username=(
+                            username.strip()
+                        ),
                         password=password,
                         branch_code=(
                             branch_code.strip()
@@ -1348,7 +1572,10 @@ if st.session_state.debug_image:
 
         st.image(
             st.session_state.debug_image,
-            caption="หน้าจอ Browser ตอนเกิด Error",
+            caption=(
+                "หน้าจอ Browser "
+                "ตอนเกิด Error"
+            ),
             use_container_width=True,
         )
 
@@ -1368,7 +1595,8 @@ if st.session_state.rpa_logs:
             st.session_state.rpa_logs
         ),
         file_name=(
-            f"ams_rpa_log_{log_timestamp}.txt"
+            f"ams_rpa_log_"
+            f"{log_timestamp}.txt"
         ),
         mime="text/plain",
         use_container_width=True,
