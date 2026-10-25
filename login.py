@@ -14,8 +14,8 @@ from playwright.sync_api import (
 
 LOGIN_URL = "https://ams.cpall.co.th/login.action"
 
-USERNAME = "thawatchaitan"
-PASSWORD = "thawatchai0910049161"
+USERNAME = ""
+PASSWORD = ""
 
 # รหัสสาขาที่ต้องการค้นหา
 BRANCH_CODE = "10319"
