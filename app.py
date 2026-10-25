@@ -24,7 +24,7 @@ from playwright.sync_api import (
 
 # ============================================================
 # WINDOWS CONFIG
-# ต้องอยู่ก่อนเริ่มใช้งาน Playwright
+# ต้องอยู่ก่อนเริ่ม Playwright
 # ============================================================
 
 if sys.platform == "win32":
@@ -39,14 +39,18 @@ if sys.platform == "win32":
 
 LOGIN_URL = "https://ams.cpall.co.th/login.action"
 
-HEADLESS = True
+# ทดสอบ True ก่อน
+# หากยังได้รับ HTTP 403 ให้เปลี่ยนเป็น False
+HEADLESS = False
 
 DEFAULT_TIMEOUT = 30_000
 LOGIN_TIMEOUT = 60_000
 POPUP_TIMEOUT = 60_000
 DOWNLOAD_TIMEOUT = 120_000
 
-BANGKOK_TIMEZONE = ZoneInfo("Asia/Bangkok")
+BANGKOK_TIMEZONE = ZoneInfo(
+    "Asia/Bangkok"
+)
 
 
 # ============================================================
@@ -204,7 +208,7 @@ class RpaLogger:
 
 
 # ============================================================
-# PREVENT MULTIPLE RPA JOBS
+# RPA LOCK
 # ป้องกันบัญชีกลางทำงานซ้อนกัน
 # ============================================================
 
@@ -219,11 +223,10 @@ def get_rpa_lock():
 
 def get_safe_url(page):
     try:
-        url = page.url
-        parsed = urlsplit(url)
+        parsed = urlsplit(page.url)
 
         # ตัด Query String และ Fragment
-        # เพื่อไม่ให้ Token ติดมากับ Log
+        # ป้องกัน Token ติดมากับ Log
         return urlunsplit(
             (
                 parsed.scheme,
@@ -246,7 +249,10 @@ def get_page_title(page):
         return "ไม่สามารถอ่าน Page title ได้"
 
 
-def get_page_text(page, max_length=800):
+def get_page_text(
+    page,
+    max_length=800,
+):
     try:
         body_text = page.locator(
             "body"
@@ -266,47 +272,37 @@ def get_page_text(page, max_length=800):
 
 # ============================================================
 # LAUNCH BROWSER
+# ใช้ Chromium ที่ Playwright ติดตั้งเอง
 # ============================================================
 
 def launch_browser(
     playwright,
     logger,
 ):
-    chromium_path = (
-        shutil.which("chromium")
-        or shutil.which("chromium-browser")
-        or shutil.which("google-chrome")
-        or shutil.which("google-chrome-stable")
+    browser_path = (
+        playwright.chromium.executable_path
     )
 
-    launch_options = {
-        "headless": HEADLESS,
-        "args": [
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-            "--disable-extensions",
-        ],
-    }
+    logger.log(
+        "กำลังใช้ Chromium "
+        "ที่ติดตั้งโดย Playwright"
+    )
 
-    if chromium_path:
-        logger.log(
-            f"พบ Chromium: {chromium_path}"
-        )
+    logger.log(
+        f"Browser path: {browser_path}",
+        "DEBUG",
+    )
 
-        launch_options["executable_path"] = (
-            chromium_path
-        )
-
-    else:
-        logger.log(
-            "ไม่พบ System Chromium "
-            "กำลังทดลองใช้ Browser ของ Playwright",
-            "WARN",
-        )
+    logger.log(
+        f"Headless mode: {HEADLESS}",
+        "DEBUG",
+    )
 
     return playwright.chromium.launch(
-        **launch_options
+        headless=HEADLESS,
+        args=[
+            "--disable-dev-shm-usage",
+        ],
     )
 
 
@@ -325,7 +321,7 @@ def wait_for_popup_hidden(
     if popup.count() == 0:
         logger.log(
             "ไม่พบ Loading popup "
-            "จึงดำเนินการขั้นตอนถัดไป"
+            "จึงดำเนินการต่อ"
         )
         return
 
@@ -333,7 +329,7 @@ def wait_for_popup_hidden(
         if popup.is_visible():
             logger.log(
                 "พบ Loading popup "
-                "กำลังรอให้โหลดข้อมูลเสร็จ"
+                "กำลังรอให้โหลดเสร็จ"
             )
 
             popup.wait_for(
@@ -347,7 +343,8 @@ def wait_for_popup_hidden(
 
         else:
             logger.log(
-                "Loading popup ไม่ได้แสดงอยู่"
+                "Loading popup "
+                "ไม่ได้แสดงอยู่"
             )
 
     except PlaywrightTimeoutError:
@@ -383,10 +380,43 @@ def login_ams(
         )
 
         if response:
+            status_code = response.status
+            headers = response.headers
+
             logger.log(
                 f"เว็บไซต์ตอบกลับ HTTP "
-                f"{response.status}"
+                f"{status_code}"
             )
+
+            logger.log(
+                f"Response server: "
+                f"{headers.get('server', '-')}",
+                "DEBUG",
+            )
+
+            logger.log(
+                f"CloudFront status: "
+                f"{headers.get('x-cache', '-')}",
+                "DEBUG",
+            )
+
+            logger.log(
+                f"CloudFront request ID: "
+                f"{headers.get('x-amz-cf-id', '-')}",
+                "DEBUG",
+            )
+
+            if status_code == 403:
+                raise RuntimeError(
+                    "AMS ปฏิเสธการเชื่อมต่อ "
+                    "ด้วย HTTP 403 ก่อนเข้าสู่หน้า Login"
+                    f" | Server: "
+                    f"{headers.get('server', '-')}"
+                    f" | X-Cache: "
+                    f"{headers.get('x-cache', '-')}"
+                    f" | CloudFront Request ID: "
+                    f"{headers.get('x-amz-cf-id', '-')}"
+                )
 
         page.wait_for_timeout(3_000)
 
@@ -438,7 +468,7 @@ def login_ams(
             "พบช่อง Username และ Password"
         )
 
-        # ไม่แสดง Username และ Password ลงใน Log
+        # ไม่บันทึก Username/Password ลง Log
         username_input.click()
         username_input.fill("")
         username_input.type(
@@ -529,7 +559,7 @@ def login_ams(
 
 
 # ============================================================
-# SEARCH
+# SEARCH DOCUMENTS
 # ============================================================
 
 def search_documents(
@@ -619,7 +649,7 @@ def search_documents(
         )
 
         logger.log(
-            "เลือกสถานะทั้งหมดเรียบร้อยแล้ว"
+            "เลือกสถานะทั้งหมดแล้ว"
         )
 
         checkbox = page.locator(
@@ -724,8 +754,8 @@ def export_excel(
         )
 
         logger.log(
-            "สร้างพื้นที่ชั่วคราวสำหรับ "
-            "จัดเก็บไฟล์แล้ว"
+            "สร้างพื้นที่ชั่วคราว "
+            "สำหรับจัดเก็บไฟล์แล้ว"
         )
 
         export_button = page.locator(
@@ -839,7 +869,6 @@ def run_rpa(
 ):
     total_started = time.perf_counter()
 
-    playwright_instance = None
     browser = None
     context = None
     page = None
@@ -853,81 +882,98 @@ def run_rpa(
     )
 
     try:
-        browser_started = logger.start_step(
-            "เปิด Chromium"
-        )
-
-        playwright_instance = (
-            sync_playwright().start()
-        )
-
-        browser = launch_browser(
-            playwright=playwright_instance,
-            logger=logger,
-        )
-
-        context = browser.new_context(
-            viewport={
-                "width": 1440,
-                "height": 900,
-            },
-            ignore_https_errors=True,
-            accept_downloads=True,
-        )
-
-        page = context.new_page()
-
-        page.set_default_timeout(
-            DEFAULT_TIMEOUT
-        )
-
-        def handle_dialog(dialog):
-            message = dialog.message
-
-            dialog_messages.append(
-                message
+        with sync_playwright() as playwright:
+            browser_started = logger.start_step(
+                "เปิด Chromium"
             )
 
-            logger.log(
-                f"เว็บไซต์แสดงข้อความ: "
-                f"{message}",
-                "DIALOG",
+            browser = launch_browser(
+                playwright=playwright,
+                logger=logger,
             )
 
-            dialog.accept()
+            context = browser.new_context(
+                viewport={
+                    "width": 1440,
+                    "height": 900,
+                },
+                locale="th-TH",
+                timezone_id="Asia/Bangkok",
+                ignore_https_errors=True,
+                accept_downloads=True,
+            )
 
-        page.on(
-            "dialog",
-            handle_dialog,
-        )
+            page = context.new_page()
 
-        logger.finish_step(
-            "เปิด Chromium",
-            browser_started,
-        )
+            page.set_default_timeout(
+                DEFAULT_TIMEOUT
+            )
 
-        login_ams(
-            page=page,
-            username=username,
-            password=password,
-            logger=logger,
-        )
+            try:
+                user_agent = page.evaluate(
+                    "() => navigator.userAgent"
+                )
 
-        search_documents(
-            page=page,
-            branch_code=branch_code,
-            search_delay=search_delay,
-            logger=logger,
-        )
+                logger.log(
+                    f"Browser User Agent: "
+                    f"{user_agent}",
+                    "DEBUG",
+                )
 
-        output_file = export_excel(
-            page=page,
-            logger=logger,
-        )
+            except Exception:
+                logger.log(
+                    "ไม่สามารถอ่าน Browser "
+                    "User Agent ได้",
+                    "WARN",
+                )
 
-        completed = True
+            def handle_dialog(dialog):
+                message = dialog.message
 
-        return output_file
+                dialog_messages.append(
+                    message
+                )
+
+                logger.log(
+                    f"เว็บไซต์แสดงข้อความ: "
+                    f"{message}",
+                    "DIALOG",
+                )
+
+                dialog.accept()
+
+            page.on(
+                "dialog",
+                handle_dialog,
+            )
+
+            logger.finish_step(
+                "เปิด Chromium",
+                browser_started,
+            )
+
+            login_ams(
+                page=page,
+                username=username,
+                password=password,
+                logger=logger,
+            )
+
+            search_documents(
+                page=page,
+                branch_code=branch_code,
+                search_delay=search_delay,
+                logger=logger,
+            )
+
+            output_file = export_excel(
+                page=page,
+                logger=logger,
+            )
+
+            completed = True
+
+            return output_file
 
     except Exception as error:
         logger.log(
@@ -956,14 +1002,15 @@ def run_rpa(
                 )
 
                 logger.log(
-                    "บันทึกภาพหน้าจอตอนเกิด "
-                    "Error สำเร็จ",
+                    "บันทึกภาพหน้าจอ "
+                    "ตอนเกิด Error สำเร็จ",
                     "DEBUG",
                 )
 
             except Exception as screenshot_error:
                 logger.log(
-                    "ไม่สามารถบันทึกภาพหน้าจอได้: "
+                    "ไม่สามารถบันทึก "
+                    "ภาพหน้าจอได้: "
                     f"{screenshot_error}",
                     "WARN",
                 )
@@ -998,12 +1045,6 @@ def run_rpa(
             except Exception:
                 pass
 
-        if playwright_instance is not None:
-            try:
-                playwright_instance.stop()
-            except Exception:
-                pass
-
         total_duration = (
             time.perf_counter()
             - total_started
@@ -1027,13 +1068,11 @@ def run_rpa(
 
 
 # ============================================================
-# FILE MIME TYPE
+# MIME TYPE
 # ============================================================
 
 def get_excel_mime(filename):
-    filename = filename.lower()
-
-    if filename.endswith(".xls"):
+    if filename.lower().endswith(".xls"):
         return "application/vnd.ms-excel"
 
     return (
@@ -1195,7 +1234,7 @@ if submitted:
 
                 with st.spinner(
                     "RPA กำลังทำงาน "
-                    "โปรดติดตามรายละเอียดใน Log..."
+                    "โปรดติดตามใน Log..."
                 ):
                     output_file = run_rpa(
                         username=username.strip(),
@@ -1222,7 +1261,6 @@ if submitted:
                         output_file.name
                     )
 
-                    # ลบไฟล์ชั่วคราวหลังอ่านเข้า Memory
                     try:
                         shutil.rmtree(
                             output_file.parent,
@@ -1273,7 +1311,7 @@ if submitted:
 
 
 # ============================================================
-# DOWNLOAD RESULT
+# DOWNLOAD EXCEL
 # ============================================================
 
 if (
