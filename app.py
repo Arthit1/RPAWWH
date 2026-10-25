@@ -6,6 +6,7 @@ import streamlit as st
 import shutil
 import tempfile
 
+
 # แก้ปัญหา Playwright ทำงานบน Streamlit + Windows
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(
@@ -346,6 +347,33 @@ def export_excel(page):
 
     return save_path
 
+# ============================================================
+# Launch browser
+# ============================================================
+
+
+def launch_browser(playwright):
+    chromium_path = (
+        shutil.which("chromium")
+        or shutil.which("chromium-browser")
+        or shutil.which("google-chrome")
+        or shutil.which("google-chrome-stable")
+    )
+
+    launch_options = {
+        "headless": True,
+        "args": [
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+        ],
+    }
+
+    # บน Streamlit Cloud จะใช้ Chromium จาก packages.txt
+    if chromium_path:
+        launch_options["executable_path"] = chromium_path
+
+    return playwright.chromium.launch(**launch_options)
 
 # ============================================================
 # RUN RPA
